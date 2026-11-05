@@ -5,7 +5,7 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, filters
 from google import genai
 
-# Inisialisasi Gemini Client
+# Inisialisasi Gemini Client dengan API Key dari Environment Variables Vercel
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
@@ -15,9 +15,9 @@ async def process_update(data):
     async def handle_message(update: Update, context):
         user_message = update.message.text
         try:
-            # Menggunakan format pemanggilan model yang paling stabil
+            # Menggunakan model gemini-2.5-flash yang kompatibel
             response = client.models.generate_content(
-                model='gemini-1.5-flash',
+                model='gemini-2.5-flash',
                 contents=user_message
             )
             reply_text = response.text
