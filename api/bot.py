@@ -17,7 +17,7 @@ async def process_update(data):
         user_message = update.message.text
         try:
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-1.5-flash',
                 contents=user_message,
                 config={
                     'system_instruction': 'Anda adalah asisten virtual yang ramah dan membantu.'
