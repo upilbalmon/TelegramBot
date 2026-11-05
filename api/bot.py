@@ -9,23 +9,20 @@ from google import genai
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-# Buat aplikasi Telegram tanpa run_polling()
 async def process_update(data):
     application = Application.builder().token(TOKEN).build()
     
     async def handle_message(update: Update, context):
         user_message = update.message.text
         try:
+            # Menggunakan format pemanggilan model yang paling stabil
             response = client.models.generate_content(
                 model='gemini-1.5-flash',
-                contents=user_message,
-                config={
-                    'system_instruction': 'Anda adalah asisten virtual yang ramah dan membantu.'
-                }
+                contents=user_message
             )
             reply_text = response.text
         except Exception as e:
-            reply_text = "Maaf, terjadi gangguan pada sistem. Coba lagi ya!"
+            reply_text = f"Maaf, terjadi gangguan pada sistem: {str(e)}"
             
         await update.message.reply_text(reply_text)
 
