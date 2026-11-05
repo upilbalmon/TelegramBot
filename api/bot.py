@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from http.server import BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters
@@ -14,15 +15,24 @@ async def process_update(data):
     
     async def handle_message(update: Update, context):
         user_message = update.message.text
-        try:
-            # Menggunakan model gemini-3.8-flash sesuai instruksi error Google
-            response = client.models.generate_content(
-                model='gemini-3.8-flash',
-                contents=user_message
-            )
-            reply_text = response.text
-        except Exception as e:
-            reply_text = f"Maaf, terjadi gangguan pada sistem: {str(e)}"
+        reply_text = None
+        
+        # Menggunakan model gemini-flash-latest agar selalu merujuk ke model aktif yang stabil
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model='gemini-flash-latest',
+                    contents=user_message
+                )
+                reply_text = response.text
+                break
+            except Exception as e:
+                error_str = str(e)
+                if "503" in error_str or "UNAVAILABLE" in error_str:
+                    if attempt < 2:
+                        time.sleep(1)
+                        continue
+                reply_text = f"Maaf, terjadi gangguan pada sistem: {error_str}"
             
         await update.message.reply_text(reply_text)
 
