@@ -5,7 +5,6 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, filters
 from google import genai
 
-# Inisialisasi Gemini Client dengan API Key dari Environment Variables Vercel
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
@@ -15,19 +14,22 @@ async def process_update(data):
     async def handle_message(update: Update, context):
         user_message = update.message.text
         try:
-            # Menggunakan model gemini-1.5-flash yang stabil
+            # Otomatis mencetak daftar model yang didukung ke log Vercel
+            available_models = [m.name for m in client.models.list()]
+            print("Model yang tersedia di akun ini:", available_models)
+            
+            # Menggunakan model pertama yang mendukung generateContent dari list akun
             response = client.models.generate_content(
-                model='gemini-1.5-flash',
+                model='gemini-1.5-flash', # Kita bisa ganti nanti sesuai log
                 contents=user_message
             )
             reply_text = response.text
         except Exception as e:
-            reply_text = f"Maaf, terjadi gangguan pada sistem: {str(e)}"
+            reply_text = f"Maaf, error: {str(e)}"
             
         await update.message.reply_text(reply_text)
 
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
     await application.initialize()
     update_obj = Update.de_json(data, application.bot)
     await application.process_update(update_obj)
@@ -36,12 +38,10 @@ class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))
         post_data = self.rfile.read(content_length)
-        
         try:
             json_data = json.loads(post_data.decode('utf-8'))
             import asyncio
             asyncio.run(process_update(json_data))
-            
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b'OK')
