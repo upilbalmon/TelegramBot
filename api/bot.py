@@ -15,9 +15,9 @@ async def process_update(data):
     async def handle_message(update: Update, context):
         user_message = update.message.text
         try:
-            # Menggunakan model gemini-2.5-flash yang kompatibel
+            # Menggunakan model gemini-3.8-flash sesuai instruksi error Google
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.8-flash',
                 contents=user_message
             )
             reply_text = response.text
