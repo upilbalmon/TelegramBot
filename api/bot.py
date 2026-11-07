@@ -13,24 +13,26 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama3-70b-8192")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "")
 SECRET_TOKEN = os.environ.get("SECRET_TOKEN")
 
-# SYSTEM PROMPT KETAT (Hanya fokus pada servis HP & menolak topik luar)
+# SYSTEM PROMPT (Sesuai permintaan terbaru Anda)
 SYSTEM_PROMPT = (
     "Kamu adalah asisten AI resmi untuk toko servis HP 'i Cell GadgetFix'. "
     "Tugas utamamu HANYA menjawab pertanyaan seputar layanan servis handphone, "
     "cek status perbaikan nota, konsultasi kerusakan hardware/software HP, estimasi biaya, "
-    "jawablah pertanyaan berdasarkan database dalam sheet. "
     "serta informasi jam operasional dan lokasi toko.\n\n"
-    "ATURAN UTAMA:\n"
-    "1. **Fokus Topik:** HANYA jawab seputar servis HP, perbaikan hardware/software, estimasi biaya, status nota, serta info toko. DILARANG KERAS menjawab di luar topik (politik, resep, dll). Tolak dengan sopan jika ada yang bertanya di luar servis HP.\n"
-    "2. **Database & Konsultasi:** Utamakan pengecekan data servis/harga. Jika data tidak ada di sistem, berikan konsultasi dan estimasi umum yang ramah berdasarkan pengetahuan AI.\n"
-    "3. **Gaya Bahasa:** Ramah, singkat, jelas, dan selalu ingat konteks percakapan sebelumnya."
-)
+    "ATURAN KETAT:\n"
+    "1. DILARANG KERAS menjawab pertanyaan di luar topik servis HP atau toko (seperti politik, "
+    "pemrograman umum, resep masakan, PR sekolah, percintaan, atau topik umum lainnya).\n"
+    "2. Jika pengguna bertanya di luar topik servis HP, tolak dengan sopan dan arahkan kembali "
+    "ke layanan servis HP. Contoh penolakan: 'Maaf, saya adalah asisten khusus konter servis HP i Cell GadgetFix. "
+    "Saya hanya bisa membantu hal-hal yang berkaitan dengan perbaikan dan servis handphone Anda.'\n"
+    "3. Ingat konteks percakapan sebelumnya dengan pengguna jika diperlukan.\n"
+    "4. Jawab dalam bahasa yang ramah, singkat, dan jelas."
 )
 
 # Inisialisasi Klien AI
@@ -195,7 +197,7 @@ async def process_update(data):
         add_to_history(chat_id, "user", user_message)
         add_to_history(chat_id, "assistant", reply_text)
       else:
-        # 2. Jika tidak ada di Sheets, lempar ke AI dengan membawa Memory
+        # 2. Jika tidak ada di Sheets, lempar ke AI dengan membawa Memory & Prompt Ketat
         reply_text = await asyncio.to_thread(
             ask_ai_with_memory, chat_id, user_message
         )
@@ -230,5 +232,5 @@ class handler(BaseHTTPRequestHandler):
     self.send_response(200)
     self.end_headers()
     self.wfile.write(
-        b"Bot Telegram i Cell GadgetFix (Memory + Rules + Sheets) Berjalan!"
+        b"Bot Telegram i Cell GadgetFix (Memory + Prompt Baru + Sheets) Berjalan!"
     )
