@@ -14,19 +14,21 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3,8-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "")
 SECRET_TOKEN = os.environ.get("SECRET_TOKEN")
 
-# SYSTEM PROMPT: AI Hanya Boleh Menjawab Berdasarkan Database Google Sheet
+# SYSTEM PROMPT MULTI-MODE & STRICT DATABASE
 SYSTEM_PROMPT = (
-    "Kamu adalah asisten AI resmi untuk toko servis HP 'i Cell GadgetFix'.\n\n"
+    "Kamu adalah asisten AI resmi untuk konter servis HP 'i Cell GadgetFix'. "
+    "Kamu memiliki 3 mode operasional yang otomatis menyesuaikan pertanyaan pelanggan:\n\n"
+    "1. **MODE 1 (Konsultasi Kerusakan):** Jika pelanggan bertanya soal gejala kerusakan (layar bergaris, mati total, boros baterai, dll), berikan analisis teknis dan estimasi perbaikan secara ramah.\n"
+    "2. **MODE 2 (Harga Sparepart & Stok):** Jika pelanggan menanya harga komponen atau ketersediaan barang, gunakan data 'daftar_harga' dari database. Jika tidak ada, beritahu dengan sopan.\n"
+    "3. **MODE 3 (Status Servis):** Jika pelanggan menanyakan status perbaikan, nomor nota, atau nama, cek data 'tiket_servis'.\n\n"
     "ATURAN MUTLAK:\n"
-    "1. **SUMBER INFORMASI HANYA DARI DATABASE:** Kamu HANYA boleh menjawab pertanyaan pelanggan berdasarkan data Google Sheet yang diberikan di bawah ini. DILARANG MENGARANG atau menggunakan pengetahuan luar untuk menjawab status servis, harga, atau ketersediaan stok.\n"
-    "2. **JIKA DATA TIDAK ADA:** Jika informasi yang ditanyakan pelanggan tidak ditemukan sama sekali di dalam data Google Sheet, jawab persis dengan kalimat ini: 'Maaf, data atau status tersebut tidak ditemukan di database kami. Silakan pastikan nomor nota atau nama yang Anda masukkan sudah benar.'\n"
-    "3. **BATASAN TOPIK:** HANYA layani pertanyaan seputar pengecekan status servis atau informasi toko i Cell GadgetFix. Tolak pertanyaan di luar topik servis HP.\n"
-    "4. Jawab secara singkat, ramah, dan jelas dalam bahasa Indonesia."
+    "- DILARANG KERAS menjawab pertanyaan di luar topik servis HP atau toko (politik, resep masakan, dll). Tolak dengan sopan jika ada yang melanggar.\n"
+    "- Jawab secara singkat, ramah, dan jelas dalam bahasa Indonesia."
 )
 
 # Inisialisasi Klien AI
@@ -46,10 +48,10 @@ if GEMINI_API_KEY:
   gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------------------
-# MEMORY STORAGE (Penyimpanan Riwayat Chat Sementara)
+# MEMORY STORAGE (Penyimpanan Riwayat Chat Berdasarkan chat_id)
 # ---------------------------------------------------------------
 chat_histories = {}
-MAX_HISTORY = 6
+MAX_HISTORY = 6  # Batasi 6 pesan terakhir agar hemat token
 
 
 def get_conversation_history(chat_id: int):
@@ -65,12 +67,11 @@ def add_to_history(chat_id: int, role: str, content: str):
     chat_histories[chat_id] = history[-MAX_HISTORY:]
 
 
-def ambil_seluruh_data_sheets() -> str:
-  """Mengambil seluruh data dari Google Sheets untuk dimasukkan ke konteks AI."""
+def ambil_database_sheets() -> str:
+  """Mengambil seluruh data (Tiket Servis & Daftar Harga) dari Google Sheets."""
   if not SHEETS_WEBHOOK_URL:
-    return "[]"
+    return "{}"
   try:
-    # Mengambil data tanpa parameter action=search agar mendapilkan semua baris/database
     response = requests.get(
         SHEETS_WEBHOOK_URL,
         params={"secret_token": SECRET_TOKEN},
@@ -79,15 +80,15 @@ def ambil_seluruh_data_sheets() -> str:
     return response.text
   except Exception as e:
     print("Gagal mengambil database Google Sheets:", e)
-    return "[]"
+    return "{}"
 
 
-def ask_groq_with_sheet_context(chat_id: int, user_prompt: str, sheet_data: str) -> str:
+def ask_groq_with_context(chat_id: int, user_prompt: str, sheet_data: str) -> str:
   history = get_conversation_history(chat_id)
 
   context_prompt = (
       f"{SYSTEM_PROMPT}\n\n"
-      f"[DATABASE GOOGLE SHEET SAAT INI]:\n{sheet_data}"
+      f"[DATABASE GOOGLE SHEET TOKO]:\n{sheet_data}"
   )
 
   messages = [{"role": "system", "content": context_prompt}]
@@ -101,7 +102,7 @@ def ask_groq_with_sheet_context(chat_id: int, user_prompt: str, sheet_data: str)
   return response.choices[0].message.content
 
 
-def ask_gemini_with_sheet_context(chat_id: int, user_prompt: str, sheet_data: str) -> str:
+def ask_gemini_with_context(chat_id: int, user_prompt: str, sheet_data: str) -> str:
   history = get_conversation_history(chat_id)
   formatted_history = ""
   for h in history:
@@ -109,7 +110,7 @@ def ask_gemini_with_sheet_context(chat_id: int, user_prompt: str, sheet_data: st
     formatted_history += f"{role}: {h['content']}\n"
 
   context_prompt = (
-      f"[DATABASE GOOGLE SHEET SAAT INI]:\n{sheet_data}\n\n"
+      f"[DATABASE GOOGLE SHEET TOKO]:\n{sheet_data}\n\n"
       f"{formatted_history}User: {user_prompt}\nAsisten:"
   )
 
@@ -121,15 +122,19 @@ def ask_gemini_with_sheet_context(chat_id: int, user_prompt: str, sheet_data: st
   return response.text
 
 
-def ask_ai_strict_sheet(chat_id: int, user_prompt: str) -> str:
-  # Ambil data terbaru dari Google Sheet setiap kali ada pesan masuk
-  sheet_data = ambil_seluruh_data_sheets()
+def ask_ai_with_memory_and_db(chat_id: int, user_prompt: str) -> str:
+  """Coba Groq dulu dengan memory + database Sheet, fallback ke Gemini jika gagal."""
+  sheet_data = ambil_database_sheets()
 
   providers = []
   if groq_client:
-    providers.append(("Groq", lambda p: ask_groq_with_sheet_context(chat_id, p, sheet_data)))
+    providers.append(
+        ("Groq", lambda p: ask_groq_with_context(chat_id, p, sheet_data))
+    )
   if gemini_client:
-    providers.append(("Gemini", lambda p: ask_gemini_with_sheet_context(chat_id, p, sheet_data)))
+    providers.append(
+        ("Gemini", lambda p: ask_gemini_with_context(chat_id, p, sheet_data))
+    )
 
   if not providers:
     raise RuntimeError("Belum ada API key (GROQ_API_KEY / GEMINI_API_KEY).")
@@ -158,14 +163,18 @@ async def process_update(data):
     user_message = update.message.text.strip()
 
     if user_message.startswith("/start"):
+      # Reset memory saat /start diketik
       if chat_id in chat_histories:
         chat_histories[chat_id] = []
 
       await bot.send_message(
           chat_id=chat_id,
           text=(
-              "Halo! Selamat datang di i Cell GadgetFix. "
-              "Kirimkan nomor nota atau nama Anda untuk mengecek status servis HP."
+              "Halo! Selamat datang di layanan **i Cell GadgetFix**.\n\n"
+              "Silakan tanyakan apa saja:\n"
+              "• Cek status servis (Kirim nomor nota / nama)\n"
+              "• Cek harga sparepart & ongkos pasang\n"
+              "• Konsultasi kerusakan handphone"
           ),
       )
       return
@@ -173,16 +182,20 @@ async def process_update(data):
       return
 
     try:
-      # Seluruh pesan langsung dilempar ke AI dengan membawa database Sheet sebagai konteks utama
-      reply_text = await asyncio.to_thread(ask_ai_strict_sheet, chat_id, user_message)
-      
+      # Kirim pesan user ke AI dengan membawa Memory chat dan Data Google Sheet
+      reply_text = await asyncio.to_thread(
+          ask_ai_with_memory_and_db, chat_id, user_message
+      )
+
+      # Simpan interaksi ke memory
       add_to_history(chat_id, "user", user_message)
       add_to_history(chat_id, "assistant", reply_text)
 
     except Exception as e:
       print("Error pemrosesan pesan:", e)
       reply_text = (
-          "Maaf, server sedang sibuk atau gagal memproses data. Coba kirim lagi beberapa saat lagi ya."
+          "Maaf, server sedang sibuk atau gagal memproses data. Coba kirim lagi"
+          " beberapa saat lagi ya."
       )
 
     await bot.send_message(chat_id=chat_id, text=reply_text[:4096])
@@ -205,4 +218,6 @@ class handler(BaseHTTPRequestHandler):
   def do_GET(self):
     self.send_response(200)
     self.end_headers()
-    self.wfile.write(b"Bot Strict-Sheet i Cell GadgetFix Berjalan!")
+    self.wfile.write(
+        b"Bot Telegram i Cell GadgetFix (Memory + Multi-Mode + Sheets) Berjalan!"
+    )
