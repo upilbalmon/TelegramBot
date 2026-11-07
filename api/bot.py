@@ -7,22 +7,32 @@ import requests
 from telegram import Bot, Update
 
 # ---------------------------------------------------------------
-# Konfigurasi Environment Variables
+# Konfigurasi Environment Variables (Atur di Vercel Settings)
 # ---------------------------------------------------------------
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3,8-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "")
 SECRET_TOKEN = os.environ.get("SECRET_TOKEN")
 
+# SYSTEM PROMPT KETAT (Hanya fokus pada servis HP & menolak topik luar)
 SYSTEM_PROMPT = (
-    "Kamu adalah asisten toko servis HP yang ramah, interaktif, dan membantu di Telegram. "
-    "Ingat konteks percakapan sebelumnya dengan pengguna. "
-    "Jawab dalam bahasa yang dipakai pengguna, singkat dan jelas."
+    "Kamu adalah asisten AI resmi untuk toko servis HP 'i Cell GadgetFix'. "
+    "Tugas utamamu HANYA menjawab pertanyaan seputar layanan servis handphone, "
+    "cek status perbaikan nota, konsultasi kerusakan hardware/software HP, estimasi biaya, "
+    "serta informasi jam operasional dan lokasi toko.\n\n"
+    "ATURAN KETAT:\n"
+    "1. DILARANG KERAS menjawab pertanyaan di luar topik servis HP atau toko (seperti politik, "
+    "pemrograman umum, resep masakan, PR sekolah, percintaan, atau topik umum lainnya).\n"
+    "2. Jika pengguna bertanya di luar topik servis HP, tolak dengan sopan dan arahkan kembali "
+    "ke layanan servis HP. Contoh penolakan: 'Maaf, saya adalah asisten khusus konter servis HP i Cell GadgetFix. "
+    "Saya hanya bisa membantu hal-hal yang berkaitan dengan perbaikan dan servis handphone Anda.'\n"
+    "3. Ingat konteks percakapan sebelumnya dengan pengguna jika diperlukan.\n"
+    "4. Jawab dalam bahasa yang ramah, singkat, dan jelas."
 )
 
 # Inisialisasi Klien AI
@@ -42,7 +52,7 @@ if GEMINI_API_KEY:
   gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------------------
-# MEMORY STORAGE (Penyimpanan Riwayat Chat Sementara berdasarkan chat_id)
+# MEMORY STORAGE (Penyimpanan Riwayat Chat Sementara)
 # ---------------------------------------------------------------
 chat_histories = {}
 MAX_HISTORY = 6  # Batasi maksimal 6 pesan terakhir agar hemat token
@@ -57,7 +67,6 @@ def get_conversation_history(chat_id: int):
 def add_to_history(chat_id: int, role: str, content: str):
   history = get_conversation_history(chat_id)
   history.append({"role": role, "content": content})
-  # Pangkas jika melebihi batas agar tidak bengkak
   if len(history) > MAX_HISTORY:
     chat_histories[chat_id] = history[-MAX_HISTORY:]
 
@@ -96,7 +105,6 @@ def cari_status_ke_sheets(query: str) -> str:
 def ask_groq_with_memory(chat_id: int, user_prompt: str) -> str:
   history = get_conversation_history(chat_id)
 
-  # Susun pesan lengkap: System Prompt + Riwayat Chat + Pesan Terbaru User
   messages = [{"role": "system", "content": SYSTEM_PROMPT}]
   messages.extend(history)
   messages.append({"role": "user", "content": user_prompt})
@@ -109,7 +117,6 @@ def ask_groq_with_memory(chat_id: int, user_prompt: str) -> str:
 
 
 def ask_gemini_with_memory(chat_id: int, user_prompt: str) -> str:
-  # Untuk Gemini, kita format riwayat singkat sebagai teks atau chat session
   history = get_conversation_history(chat_id)
   formatted_history = ""
   for h in history:
@@ -170,9 +177,9 @@ async def process_update(data):
       await bot.send_message(
           chat_id=chat_id,
           text=(
-              "Halo! Kirimkan nomor nota atau nama Anda untuk mengecek status"
-              " servis HP, atau tanyakan hal lain. Percakapan kita sekarang"
-              " sudah tersambung/mengingat konteks sebelumnya."
+              "Halo! Selamat datang di layanan i Cell GadgetFix. "
+              "Kirimkan nomor nota atau nama Anda untuk mengecek status servis HP, "
+              "atau tanyakan seputar perbaikan handphone."
           ),
       )
       return
@@ -180,22 +187,20 @@ async def process_update(data):
       return
 
     try:
-      # 1. Cek database Google Sheets terlebih dahulu (apakah user sedang cari nota/nama)
+      # 1. Cek database Google Sheets terlebih dahulu
       sheet_result = await asyncio.to_thread(
           cari_status_ke_sheets, user_message
       )
 
       if sheet_result:
         reply_text = sheet_result
-        # Simpan interaksi ke memory
         add_to_history(chat_id, "user", user_message)
         add_to_history(chat_id, "assistant", reply_text)
       else:
-        # 2. Jika tidak ada di Sheets, lempar ke AI dengan membawa Memory chat
+        # 2. Jika tidak ada di Sheets, lempar ke AI dengan membawa Memory
         reply_text = await asyncio.to_thread(
             ask_ai_with_memory, chat_id, user_message
         )
-        # Simpan ke memory
         add_to_history(chat_id, "user", user_message)
         add_to_history(chat_id, "assistant", reply_text)
 
@@ -226,4 +231,6 @@ class handler(BaseHTTPRequestHandler):
   def do_GET(self):
     self.send_response(200)
     self.end_headers()
-    self.wfile.write(b"Bot Telegram Memory & Google Sheets Berjalan!")
+    self.wfile.write(
+        b"Bot Telegram i Cell GadgetFix (Memory + Rules + Sheets) Berjalan!"
+    )
