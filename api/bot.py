@@ -13,26 +13,20 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama3-70b-8192")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3,8-flash")
 
 SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "")
 SECRET_TOKEN = os.environ.get("SECRET_TOKEN")
 
-# SYSTEM PROMPT (Sesuai permintaan terbaru Anda)
+# SYSTEM PROMPT: AI Hanya Boleh Menjawab Berdasarkan Database Google Sheet
 SYSTEM_PROMPT = (
-    "Kamu adalah asisten AI resmi untuk toko servis HP 'i Cell GadgetFix'. "
-    "Tugas utamamu HANYA menjawab pertanyaan seputar layanan servis handphone, "
-    "cek status perbaikan nota, konsultasi kerusakan hardware/software HP, estimasi biaya, "
-    "serta informasi jam operasional dan lokasi toko.\n\n"
-    "ATURAN KETAT:\n"
-    "1. DILARANG KERAS menjawab pertanyaan di luar topik servis HP atau toko (seperti politik, "
-    "pemrograman umum, resep masakan, PR sekolah, percintaan, atau topik umum lainnya).\n"
-    "2. Jika pengguna bertanya di luar topik servis HP, tolak dengan sopan dan arahkan kembali "
-    "ke layanan servis HP. Contoh penolakan: 'Maaf, saya adalah asisten khusus konter servis HP i Cell GadgetFix. "
-    "Saya hanya bisa membantu hal-hal yang berkaitan dengan perbaikan dan servis handphone Anda.'\n"
-    "3. Ingat konteks percakapan sebelumnya dengan pengguna jika diperlukan.\n"
-    "4. Jawab dalam bahasa yang ramah, singkat, dan jelas."
+    "Kamu adalah asisten AI resmi untuk toko servis HP 'i Cell GadgetFix'.\n\n"
+    "ATURAN MUTLAK:\n"
+    "1. **SUMBER INFORMASI HANYA DARI DATABASE:** Kamu HANYA boleh menjawab pertanyaan pelanggan berdasarkan data Google Sheet yang diberikan di bawah ini. DILARANG MENGARANG atau menggunakan pengetahuan luar untuk menjawab status servis, harga, atau ketersediaan stok.\n"
+    "2. **JIKA DATA TIDAK ADA:** Jika informasi yang ditanyakan pelanggan tidak ditemukan sama sekali di dalam data Google Sheet, jawab persis dengan kalimat ini: 'Maaf, data atau status tersebut tidak ditemukan di database kami. Silakan pastikan nomor nota atau nama yang Anda masukkan sudah benar.'\n"
+    "3. **BATASAN TOPIK:** HANYA layani pertanyaan seputar pengecekan status servis atau informasi toko i Cell GadgetFix. Tolak pertanyaan di luar topik servis HP.\n"
+    "4. Jawab secara singkat, ramah, dan jelas dalam bahasa Indonesia."
 )
 
 # Inisialisasi Klien AI
@@ -55,7 +49,7 @@ if GEMINI_API_KEY:
 # MEMORY STORAGE (Penyimpanan Riwayat Chat Sementara)
 # ---------------------------------------------------------------
 chat_histories = {}
-MAX_HISTORY = 6  # Batasi maksimal 6 pesan terakhir agar hemat token
+MAX_HISTORY = 6
 
 
 def get_conversation_history(chat_id: int):
@@ -71,41 +65,32 @@ def add_to_history(chat_id: int, role: str, content: str):
     chat_histories[chat_id] = history[-MAX_HISTORY:]
 
 
-def cari_status_ke_sheets(query: str) -> str:
-  """Mencari data status servisan dari Google Sheets via Webhook."""
+def ambil_seluruh_data_sheets() -> str:
+  """Mengambil seluruh data dari Google Sheets untuk dimasukkan ke konteks AI."""
   if not SHEETS_WEBHOOK_URL:
-    return None
+    return "[]"
   try:
+    # Mengambil data tanpa parameter action=search agar mendapilkan semua baris/database
     response = requests.get(
         SHEETS_WEBHOOK_URL,
-        params={
-            "action": "search",
-            "query": query,
-            "secret_token": SECRET_TOKEN,
-        },
+        params={"secret_token": SECRET_TOKEN},
         timeout=5,
     )
-    data = response.json()
-    if data.get("found"):
-      return (
-          f"🔍 Data Servis Ditemukan:\n\n"
-          f"• ID Servis: {data.get('serviceId')}\n"
-          f"• Pelanggan: {data.get('customerName')}\n"
-          f"• Perangkat: {data.get('deviceModel')}\n"
-          f"• Status: {data.get('status')}\n"
-          f"• Total Biaya: Rp {data.get('totalPrice')}"
-      )
-    else:
-      return None
+    return response.text
   except Exception as e:
-    print("Gagal akses Google Sheets:", e)
-    return None
+    print("Gagal mengambil database Google Sheets:", e)
+    return "[]"
 
 
-def ask_groq_with_memory(chat_id: int, user_prompt: str) -> str:
+def ask_groq_with_sheet_context(chat_id: int, user_prompt: str, sheet_data: str) -> str:
   history = get_conversation_history(chat_id)
 
-  messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+  context_prompt = (
+      f"{SYSTEM_PROMPT}\n\n"
+      f"[DATABASE GOOGLE SHEET SAAT INI]:\n{sheet_data}"
+  )
+
+  messages = [{"role": "system", "content": context_prompt}]
   messages.extend(history)
   messages.append({"role": "user", "content": user_prompt})
 
@@ -116,32 +101,35 @@ def ask_groq_with_memory(chat_id: int, user_prompt: str) -> str:
   return response.choices[0].message.content
 
 
-def ask_gemini_with_memory(chat_id: int, user_prompt: str) -> str:
+def ask_gemini_with_sheet_context(chat_id: int, user_prompt: str, sheet_data: str) -> str:
   history = get_conversation_history(chat_id)
   formatted_history = ""
   for h in history:
     role = "User" if h["role"] == "user" else "Asisten"
     formatted_history += f"{role}: {h['content']}\n"
 
-  prompt_gabungan = (
+  context_prompt = (
+      f"[DATABASE GOOGLE SHEET SAAT INI]:\n{sheet_data}\n\n"
       f"{formatted_history}User: {user_prompt}\nAsisten:"
   )
 
   response = gemini_client.models.generate_content(
       model=GEMINI_MODEL,
-      contents=prompt_gabungan,
+      contents=context_prompt,
       config={"system_instruction": SYSTEM_PROMPT},
   )
   return response.text
 
 
-def ask_ai_with_memory(chat_id: int, user_prompt: str) -> str:
-  """Coba Groq dulu dengan memory, kalau gagal pindah ke Gemini."""
+def ask_ai_strict_sheet(chat_id: int, user_prompt: str) -> str:
+  # Ambil data terbaru dari Google Sheet setiap kali ada pesan masuk
+  sheet_data = ambil_seluruh_data_sheets()
+
   providers = []
   if groq_client:
-    providers.append(("Groq", lambda p: ask_groq_with_memory(chat_id, p)))
+    providers.append(("Groq", lambda p: ask_groq_with_sheet_context(chat_id, p, sheet_data)))
   if gemini_client:
-    providers.append(("Gemini", lambda p: ask_gemini_with_memory(chat_id, p)))
+    providers.append(("Gemini", lambda p: ask_gemini_with_sheet_context(chat_id, p, sheet_data)))
 
   if not providers:
     raise RuntimeError("Belum ada API key (GROQ_API_KEY / GEMINI_API_KEY).")
@@ -170,16 +158,14 @@ async def process_update(data):
     user_message = update.message.text.strip()
 
     if user_message.startswith("/start"):
-      # Reset memory saat /start ditekan
       if chat_id in chat_histories:
         chat_histories[chat_id] = []
 
       await bot.send_message(
           chat_id=chat_id,
           text=(
-              "Halo! Selamat datang di layanan i Cell GadgetFix. "
-              "Kirimkan nomor nota atau nama Anda untuk mengecek status servis HP, "
-              "atau tanyakan seputar perbaikan handphone."
+              "Halo! Selamat datang di i Cell GadgetFix. "
+              "Kirimkan nomor nota atau nama Anda untuk mengecek status servis HP."
           ),
       )
       return
@@ -187,28 +173,16 @@ async def process_update(data):
       return
 
     try:
-      # 1. Cek database Google Sheets terlebih dahulu
-      sheet_result = await asyncio.to_thread(
-          cari_status_ke_sheets, user_message
-      )
-
-      if sheet_result:
-        reply_text = sheet_result
-        add_to_history(chat_id, "user", user_message)
-        add_to_history(chat_id, "assistant", reply_text)
-      else:
-        # 2. Jika tidak ada di Sheets, lempar ke AI dengan membawa Memory & Prompt Ketat
-        reply_text = await asyncio.to_thread(
-            ask_ai_with_memory, chat_id, user_message
-        )
-        add_to_history(chat_id, "user", user_message)
-        add_to_history(chat_id, "assistant", reply_text)
+      # Seluruh pesan langsung dilempar ke AI dengan membawa database Sheet sebagai konteks utama
+      reply_text = await asyncio.to_thread(ask_ai_strict_sheet, chat_id, user_message)
+      
+      add_to_history(chat_id, "user", user_message)
+      add_to_history(chat_id, "assistant", reply_text)
 
     except Exception as e:
       print("Error pemrosesan pesan:", e)
       reply_text = (
-          "Maaf, server sedang sibuk atau gagal memproses data. Coba kirim lagi"
-          " beberapa saat lagi ya."
+          "Maaf, server sedang sibuk atau gagal memproses data. Coba kirim lagi beberapa saat lagi ya."
       )
 
     await bot.send_message(chat_id=chat_id, text=reply_text[:4096])
@@ -231,6 +205,4 @@ class handler(BaseHTTPRequestHandler):
   def do_GET(self):
     self.send_response(200)
     self.end_headers()
-    self.wfile.write(
-        b"Bot Telegram i Cell GadgetFix (Memory + Prompt Baru + Sheets) Berjalan!"
-    )
+    self.wfile.write(b"Bot Strict-Sheet i Cell GadgetFix Berjalan!")
