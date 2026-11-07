@@ -7,7 +7,7 @@ import requests
 from telegram import Bot, Update
 
 # ---------------------------------------------------------------
-# Konfigurasi Environment Variables
+# Konfigurasi Aman (Semua diambil dari Environment Variables Vercel)
 # ---------------------------------------------------------------
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -17,14 +17,14 @@ GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "")
-SECRET_TOKEN = os.environ.get("SECRET_TOKEN", "TOKEN_RAHASIA_TOKO_123")
+SECRET_TOKEN = os.environ.get("SECRET_TOKEN")
 
 SYSTEM_PROMPT = (
     "Kamu adalah asisten toko servis HP yang ramah dan membantu di Telegram. "
     "Jawab dalam bahasa yang dipakai pengguna, singkat dan jelas."
 )
 
-# Klien Groq (OpenAI Compatible)
+# Klien Groq
 groq_client = None
 if GROQ_API_KEY:
   from openai import OpenAI
@@ -34,7 +34,7 @@ if GROQ_API_KEY:
       base_url="https://api.groq.com/openai/v1",
   )
 
-# Klien Gemini (Google GenAI SDK Terbaru)
+# Klien Gemini (SDK google-genai terbaru)
 gemini_client = None
 if GEMINI_API_KEY:
   from google import genai
@@ -85,7 +85,6 @@ def ask_groq(prompt: str) -> str:
 
 
 def ask_gemini(prompt: str) -> str:
-  # PERBAIKAN: Menggunakan method generate_content sesuai SDK google-genai
   response = gemini_client.models.generate_content(
       model=GEMINI_MODEL,
       contents=prompt,
@@ -141,7 +140,7 @@ async def process_update(data):
       return
 
     try:
-      # 1. Cek dulu apakah pesan mencocokkan data di Google Sheets
+      # 1. Cek database Google Sheets terlebih dahulu
       sheet_result = await asyncio.to_thread(
           cari_status_ke_sheets, user_message
       )
@@ -149,7 +148,7 @@ async def process_update(data):
       if sheet_result:
         reply_text = sheet_result
       else:
-        # 2. Jika tidak ditemukan di Sheets, lempar ke AI (Groq/Gemini)
+        # 2. Jika tidak ada di Sheets, lempar ke AI (Groq/Gemini)
         reply_text = await asyncio.to_thread(ask_ai, user_message)
     except Exception as e:
       print("Error pemrosesan pesan:", e)
@@ -158,7 +157,6 @@ async def process_update(data):
           " beberapa saat lagi ya."
       )
 
-    # PERBAIKAN: Mengirim tanpa parse_mode='Markdown' agar aman dari karakter khusus nama/model HP
     await bot.send_message(chat_id=chat_id, text=reply_text[:4096])
 
 
