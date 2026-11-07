@@ -7,24 +7,25 @@ import requests
 from telegram import Bot, Update
 
 # ---------------------------------------------------------------
-# Konfigurasi Aman (Semua diambil dari Environment Variables Vercel)
+# Konfigurasi Environment Variables
 # ---------------------------------------------------------------
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3,8-flash")
 
 SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "")
 SECRET_TOKEN = os.environ.get("SECRET_TOKEN")
 
 SYSTEM_PROMPT = (
-    "Kamu adalah asisten toko servis HP yang ramah dan membantu di Telegram. "
+    "Kamu adalah asisten toko servis HP yang ramah, interaktif, dan membantu di Telegram. "
+    "Ingat konteks percakapan sebelumnya dengan pengguna. "
     "Jawab dalam bahasa yang dipakai pengguna, singkat dan jelas."
 )
 
-# Klien Groq
+# Inisialisasi Klien AI
 groq_client = None
 if GROQ_API_KEY:
   from openai import OpenAI
@@ -34,12 +35,31 @@ if GROQ_API_KEY:
       base_url="https://api.groq.com/openai/v1",
   )
 
-# Klien Gemini (SDK google-genai terbaru)
 gemini_client = None
 if GEMINI_API_KEY:
   from google import genai
 
   gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+
+# ---------------------------------------------------------------
+# MEMORY STORAGE (Penyimpanan Riwayat Chat Sementara berdasarkan chat_id)
+# ---------------------------------------------------------------
+chat_histories = {}
+MAX_HISTORY = 6  # Batasi maksimal 6 pesan terakhir agar hemat token
+
+
+def get_conversation_history(chat_id: int):
+  if chat_id not in chat_histories:
+    chat_histories[chat_id] = []
+  return chat_histories[chat_id]
+
+
+def add_to_history(chat_id: int, role: str, content: str):
+  history = get_conversation_history(chat_id)
+  history.append({"role": role, "content": content})
+  # Pangkas jika melebihi batas agar tidak bengkak
+  if len(history) > MAX_HISTORY:
+    chat_histories[chat_id] = history[-MAX_HISTORY:]
 
 
 def cari_status_ke_sheets(query: str) -> str:
@@ -73,33 +93,48 @@ def cari_status_ke_sheets(query: str) -> str:
     return None
 
 
-def ask_groq(prompt: str) -> str:
+def ask_groq_with_memory(chat_id: int, user_prompt: str) -> str:
+  history = get_conversation_history(chat_id)
+
+  # Susun pesan lengkap: System Prompt + Riwayat Chat + Pesan Terbaru User
+  messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+  messages.extend(history)
+  messages.append({"role": "user", "content": user_prompt})
+
   response = groq_client.chat.completions.create(
       model=GROQ_MODEL,
-      messages=[
-          {"role": "system", "content": SYSTEM_PROMPT},
-          {"role": "user", "content": prompt},
-      ],
+      messages=messages,
   )
   return response.choices[0].message.content
 
 
-def ask_gemini(prompt: str) -> str:
+def ask_gemini_with_memory(chat_id: int, user_prompt: str) -> str:
+  # Untuk Gemini, kita format riwayat singkat sebagai teks atau chat session
+  history = get_conversation_history(chat_id)
+  formatted_history = ""
+  for h in history:
+    role = "User" if h["role"] == "user" else "Asisten"
+    formatted_history += f"{role}: {h['content']}\n"
+
+  prompt_gabungan = (
+      f"{formatted_history}User: {user_prompt}\nAsisten:"
+  )
+
   response = gemini_client.models.generate_content(
       model=GEMINI_MODEL,
-      contents=prompt,
+      contents=prompt_gabungan,
       config={"system_instruction": SYSTEM_PROMPT},
   )
   return response.text
 
 
-def ask_ai(prompt: str) -> str:
-  """Coba Groq dulu, kalau gagal pindah ke Gemini."""
+def ask_ai_with_memory(chat_id: int, user_prompt: str) -> str:
+  """Coba Groq dulu dengan memory, kalau gagal pindah ke Gemini."""
   providers = []
   if groq_client:
-    providers.append(("Groq", ask_groq))
+    providers.append(("Groq", lambda p: ask_groq_with_memory(chat_id, p)))
   if gemini_client:
-    providers.append(("Gemini", ask_gemini))
+    providers.append(("Gemini", lambda p: ask_gemini_with_memory(chat_id, p)))
 
   if not providers:
     raise RuntimeError("Belum ada API key (GROQ_API_KEY / GEMINI_API_KEY).")
@@ -107,7 +142,7 @@ def ask_ai(prompt: str) -> str:
   last_error = None
   for name, fn in providers:
     try:
-      text = fn(prompt)
+      text = fn(user_prompt)
       if text:
         return text
     except Exception as e:
@@ -128,11 +163,16 @@ async def process_update(data):
     user_message = update.message.text.strip()
 
     if user_message.startswith("/start"):
+      # Reset memory saat /start ditekan
+      if chat_id in chat_histories:
+        chat_histories[chat_id] = []
+
       await bot.send_message(
           chat_id=chat_id,
           text=(
               "Halo! Kirimkan nomor nota atau nama Anda untuk mengecek status"
-              " servis HP, atau tanyakan hal lain."
+              " servis HP, atau tanyakan hal lain. Percakapan kita sekarang"
+              " sudah tersambung/mengingat konteks sebelumnya."
           ),
       )
       return
@@ -140,16 +180,25 @@ async def process_update(data):
       return
 
     try:
-      # 1. Cek database Google Sheets terlebih dahulu
+      # 1. Cek database Google Sheets terlebih dahulu (apakah user sedang cari nota/nama)
       sheet_result = await asyncio.to_thread(
           cari_status_ke_sheets, user_message
       )
 
       if sheet_result:
         reply_text = sheet_result
+        # Simpan interaksi ke memory
+        add_to_history(chat_id, "user", user_message)
+        add_to_history(chat_id, "assistant", reply_text)
       else:
-        # 2. Jika tidak ada di Sheets, lempar ke AI (Groq/Gemini)
-        reply_text = await asyncio.to_thread(ask_ai, user_message)
+        # 2. Jika tidak ada di Sheets, lempar ke AI dengan membawa Memory chat
+        reply_text = await asyncio.to_thread(
+            ask_ai_with_memory, chat_id, user_message
+        )
+        # Simpan ke memory
+        add_to_history(chat_id, "user", user_message)
+        add_to_history(chat_id, "assistant", reply_text)
+
     except Exception as e:
       print("Error pemrosesan pesan:", e)
       reply_text = (
@@ -177,4 +226,4 @@ class handler(BaseHTTPRequestHandler):
   def do_GET(self):
     self.send_response(200)
     self.end_headers()
-    self.wfile.write(b"Bot Telegram Terhubung ke Google Sheets & AI Berjalan!")
+    self.wfile.write(b"Bot Telegram Memory & Google Sheets Berjalan!")
